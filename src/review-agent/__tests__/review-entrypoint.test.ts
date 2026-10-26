@@ -119,10 +119,23 @@ describe('ReviewAgentEntrypoint', () => {
     } else {
       process.env.DATABASE_PATH = savedDbPath;
     }
-    if (existsSync(dbPath)) unlinkSync(dbPath);
-    if (existsSync(`${dbPath}-wal`)) unlinkSync(`${dbPath}-wal`);
-    if (existsSync(`${dbPath}-shm`)) unlinkSync(`${dbPath}-shm`);
-    if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true });
+    // Windows 上 bun:sqlite 的文件锁可能尚未释放，删不掉就算了：
+    // 这是临时目录，OS 最终会回收，不影响断言。
+    const unlinkQuietly = (target: string) => {
+      try {
+        if (existsSync(target)) unlinkSync(target);
+      } catch {
+        /* EBUSY: 文件仍被占用，留给系统清理 */
+      }
+    };
+    unlinkQuietly(dbPath);
+    unlinkQuietly(`${dbPath}-wal`);
+    unlinkQuietly(`${dbPath}-shm`);
+    try {
+      if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true });
+    } catch {
+      /* 同上 */
+    }
   });
 
   test('starts exactly one main agent session and stores submitted findings', async () => {

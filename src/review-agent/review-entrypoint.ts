@@ -12,6 +12,7 @@ import { DiffExtractor } from '../review/context/diff-extractor';
 import type { LocalRepoPaths } from '../review/context/local-repo-manager';
 import { LocalRepoManager } from '../review/context/local-repo-manager';
 import { tokenCounter } from '../review/context/token-counter';
+import { resolveProjectReviewPrompt } from '../review/project-review-prompt';
 import { FileReviewStore } from '../review/store/file-review-store';
 import type { Finding, ReviewContext, ReviewRun } from '../review/types';
 import { logger } from '../utils/logger';
@@ -100,23 +101,47 @@ function tryParseFinalSubmission(text?: string): SubmittedReviewFindings | null 
   return parseSubmissionFromText(text);
 }
 
-function buildReviewPrompt(context: ReviewAgentRunContext, model?: string): string {
+const DEFAULT_AGENT_REVIEW_GUIDELINES = [
+  'Review only the supplied change context and report actionable correctness, security, reliability, or maintainability findings.',
+].join('\n');
+
+const AGENT_OUTPUT_CONTRACT = [
+  'You are the main code review agent for Gitea AI Assistant.',
+  'When finished, call submit_review_findings exactly once with summaryMarkdown and findings. If no issues are found, submit an empty findings array.',
+].join('\n');
+
+export function buildReviewPrompt(
+  context: ReviewAgentRunContext,
+  model?: string,
+  projectPrompt?: string
+): string {
   const changedFiles = context.diffSummary?.changedFiles ?? [];
   const fileSummary = changedFiles
     .map((file) => `- ${file.status} ${file.path} (+${file.additions}/-${file.deletions})`)
     .join('\n');
   const rawDiff = context.diffSummary?.diff?.trim() || '(diff omitted)';
 
-  const usableBudget = model ? tokenCounter.getUsableBudget(model) : 124_000;
-  const reservedForPrompt = 4000;
-  const diffBudget = Math.max(1000, usableBudget - reservedForPrompt);
-  const diff =
-    tokenCounter.count(rawDiff) > diffBudget ? tokenCounter.clip(rawDiff, diffBudget) : rawDiff;
+  const guidelines = config.review.agentReviewPrompt?.trim() || DEFAULT_AGENT_REVIEW_GUIDELINES;
+  const globalPrompt = config.review.globalPrompt?.trim();
 
-  return [
-    'You are the main code review agent for Gitea AI Assistant.',
-    'Review only the supplied change context and report actionable correctness, security, reliability, or maintainability findings.',
-    'When finished, call submit_review_findings exactly once with summaryMarkdown and findings. If no issues are found, submit an empty findings array.',
+  const header = [AGENT_OUTPUT_CONTRACT, '', '## Review guidelines', '', guidelines];
+
+  if (globalPrompt) {
+    header.push('', '## Global requirements', '', globalPrompt);
+  }
+
+  if (projectPrompt) {
+    header.push('', '## Project-specific requirements', '', projectPrompt);
+  }
+
+  if (globalPrompt || projectPrompt) {
+    header.push(
+      '',
+      'When requirements conflict: Project-specific requirements > Global requirements > Review guidelines.'
+    );
+  }
+
+  header.push(
     '',
     `Review run: ${context.reviewRunId}`,
     `Session scope: ${context.sessionScope}`,
@@ -129,9 +154,19 @@ function buildReviewPrompt(context: ReviewAgentRunContext, model?: string): stri
     'Changed files:',
     fileSummary || '- none',
     '',
-    'Diff:',
-    diff,
-  ].join('\n');
+    'Diff:'
+  );
+
+  // Reserve room for the header itself plus model output; a long custom prompt
+  // shrinks the diff budget instead of silently overflowing the context window.
+  const usableBudget = model ? tokenCounter.getUsableBudget(model) : 124_000;
+  const headerText = header.join('\n');
+  const reservedForPrompt = tokenCounter.count(headerText) + 4000;
+  const diffBudget = Math.max(1000, usableBudget - reservedForPrompt);
+  const diff =
+    tokenCounter.count(rawDiff) > diffBudget ? tokenCounter.clip(rawDiff, diffBudget) : rawDiff;
+
+  return `${headerText}\n${diff}`;
 }
 
 function defaultSubagentDefinition(): AgentDefinition {
@@ -254,7 +289,9 @@ export class ReviewAgentEntrypoint {
         };
       }
 
-      const result = await this.runMainAgent(run, reviewContext);
+      // 仓库级提示词只读一次，放在 agent 循环之外，避免在会话进行中反复触碰 DB
+      const projectPrompt = resolveProjectReviewPrompt(run.owner, run.repo)?.trim();
+      const result = await this.runMainAgent(run, reviewContext, projectPrompt);
       if (run.eventType === 'pull_request' && run.prNumber && run.baseSha) {
         await this.localRepoManager.saveReviewedRef(
           repoPaths.mirrorPath,
@@ -312,7 +349,8 @@ export class ReviewAgentEntrypoint {
 
   private async runMainAgent(
     run: ReviewRun,
-    reviewContext: ReviewContext
+    reviewContext: ReviewContext,
+    projectPrompt?: string
   ): Promise<ReviewAgentEntrypointResult> {
     const sessionScope = buildSessionScope(run);
     const reviewToolState: ReviewToolState = { submittedReview: null };
@@ -359,7 +397,7 @@ export class ReviewAgentEntrypoint {
     const agentResult = await runner.run({
       agentType: 'review-main-agent',
       model: this.model,
-      userMessage: buildReviewPrompt(runContext, this.model),
+      userMessage: buildReviewPrompt(runContext, this.model, projectPrompt),
       maxTurns: 8,
       maxToolCalls: 4,
       maxSubagents: 3,

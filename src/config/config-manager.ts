@@ -2,6 +2,20 @@ import { randomBytes } from 'node:crypto';
 import { settingsRepo } from '../db/repositories/settings-repo';
 import { CONFIG_FIELDS, type ConfigFieldMeta } from './config-schema';
 
+/**
+ * 沙箱命令白名单默认值，按平台区分。
+ *
+ * cat / sed / wc / head / tail / grep / ls 是 Unix 命令，Windows 上不存在
+ * （除非装了 Git for Windows 且 usr/bin 在 PATH 里）。
+ * Windows 上给出真实存在的等价物：git、rg，以及 PowerShell 本体。
+ */
+export function defaultAllowedCommands(): string[] {
+  if (process.platform === 'win32') {
+    return ['git', 'rg', 'powershell', 'pwsh'];
+  }
+  return ['git', 'rg', 'cat', 'sed', 'wc'];
+}
+
 // ---------------------------------------------------------------------------
 // Config shape (matches default export of src/config/index.ts)
 // ---------------------------------------------------------------------------
@@ -45,6 +59,7 @@ export interface AppConfig {
     llmRetryBaseDelayMs: number;
     agentMainModel: string;
     agentDefaultSubagentModel: string;
+    agentReviewPrompt: string | undefined;
     smallMaxFiles: number;
     smallMaxChangedLines: number;
     mediumMaxFiles: number;
@@ -161,19 +176,14 @@ class ConfigManager {
         maxParallelRuns: toNumber('REVIEW_MAX_PARALLEL_RUNS', 2),
         maxFilesPerRun: toNumber('REVIEW_MAX_FILES_PER_RUN', 200),
         maxFileContentChars: toNumber('REVIEW_MAX_FILE_CONTENT_CHARS', 40000),
-        allowedCommands: toStringArray('REVIEW_ALLOWED_COMMANDS', [
-          'git',
-          'rg',
-          'cat',
-          'sed',
-          'wc',
-        ]),
+        allowedCommands: toStringArray('REVIEW_ALLOWED_COMMANDS', defaultAllowedCommands()),
         commandTimeoutMs: toNumber('REVIEW_COMMAND_TIMEOUT_MS', 120000),
         llmMaxConcurrentCalls: toNumber('LLM_MAX_CONCURRENT_CALLS', 4),
         llmRetryMaxAttempts: toNumber('LLM_RETRY_MAX_ATTEMPTS', 3),
         llmRetryBaseDelayMs: toNumber('LLM_RETRY_BASE_DELAY_MS', 1000),
         agentMainModel: values.AGENT_MAIN_MODEL ?? 'gpt-4.1',
         agentDefaultSubagentModel: values.AGENT_DEFAULT_SUBAGENT_MODEL ?? 'gpt-4.1-mini',
+        agentReviewPrompt: values.AGENT_REVIEW_PROMPT,
         smallMaxFiles: toNumber('REVIEW_SMALL_MAX_FILES', 3),
         smallMaxChangedLines: toNumber('REVIEW_SMALL_MAX_CHANGED_LINES', 80),
         mediumMaxFiles: toNumber('REVIEW_MEDIUM_MAX_FILES', 10),

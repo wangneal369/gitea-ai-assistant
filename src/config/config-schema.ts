@@ -234,10 +234,10 @@ export const CONFIG_FIELDS: ConfigFieldMeta[] = [
     envKey: 'REVIEW_ALLOWED_COMMANDS',
     group: 'review',
     label: '允许命令',
-    description: '本地审查沙箱中允许执行的命令白名单（逗号分隔）',
+    description:
+      '本地审查沙箱中允许执行的命令白名单（逗号分隔）。留空则按平台取默认：Linux/macOS 为 git,rg,cat,sed,wc；Windows 为 git,rg,powershell,pwsh',
     type: 'string',
     sensitive: false,
-    defaultValue: 'git,rg,cat,sed,wc',
   },
   {
     envKey: 'REVIEW_COMMAND_TIMEOUT_MS',
@@ -300,6 +300,15 @@ export const CONFIG_FIELDS: ConfigFieldMeta[] = [
     type: 'string',
     sensitive: false,
     defaultValue: 'gpt-4.1-mini',
+  },
+  {
+    envKey: 'AGENT_REVIEW_PROMPT',
+    group: 'review',
+    label: 'Agent 审查提示词',
+    description:
+      '覆盖 Agent 引擎默认的代码审查原则（留空使用内置原则）。全局提示词会追加在其后，优先级更高。',
+    type: 'text',
+    sensitive: false,
   },
   {
     envKey: 'REVIEW_SMALL_MAX_FILES',
