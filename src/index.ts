@@ -76,7 +76,12 @@ app.get('*', serveStatic({ path: './public/index.html' }));
 
 // 启动服务器
 const port = config.app.port;
-console.log(`⚡️ 服务启动在 http://localhost:${port}`);
+
+// 监听地址。默认 0.0.0.0 以兼容容器/服务器部署；
+// 桌面客户端会传入 127.0.0.1，避免把本地服务暴露到局域网。
+const hostname = process.env.BIND_HOST?.trim() || '0.0.0.0';
+
+console.log(`⚡️ 服务启动在 http://${hostname === '0.0.0.0' ? 'localhost' : hostname}:${port}`);
 
 // 启动审查引擎（根据配置选择）
 reviewEngine.start().catch((error) => {
@@ -91,5 +96,6 @@ cleanupScheduler.start();
 
 export default {
   port,
+  hostname,
   fetch: app.fetch,
 };

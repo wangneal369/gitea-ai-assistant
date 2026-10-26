@@ -1,0 +1,14 @@
+# 统一用 LF 存库。Windows 上 core.autocrlf=true 会把工作区写成 CRLF，
+# 导致 biome 等要求 LF 的检查器报出成百条格式错误。
+* text=auto eol=lf
+
+# 二进制文件不做行尾转换
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.exe   binary
+*.zip   binary
+*.woff  binary
+*.woff2 binary
