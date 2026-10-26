@@ -13,6 +13,7 @@ import { cleanupScheduler } from './review/cleanup-scheduler';
 import { codexEngine } from './review/codex/codex-engine';
 import { mcpRouter } from './review/codex/mcp-handler';
 import { reviewEngine } from './review/engine';
+import { APP_VERSION } from './utils/version';
 
 initMasterKey();
 initDatabase();
@@ -30,7 +31,7 @@ app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
     message: 'AI Code Review 服务运行中',
-    version: '2.0.0',
+    version: APP_VERSION,
     webhookSecurityEnabled: webhookSecretConfigured,
     configuration: {
       webhookEndpoints: {
