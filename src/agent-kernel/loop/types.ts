@@ -45,6 +45,14 @@ export type ToolPermissionBehavior = 'allow' | 'deny';
 export interface MainAgentTool {
   definition: LLMToolDefinition;
   permissionScope?: ToolPermissionScope;
+  /**
+   * 终态工具：只负责收尾（如 submit_review_findings），不消耗探索预算。
+   *
+   * 背景：探索预算耗尽时若「提交」也算一次工具调用，模型可能正好卡在
+   * 调不出 submit 的临界点上，导致整轮审查没有结论。终态工具豁免预算后，
+   * 模型用完探索额度仍能提交已有结论。
+   */
+  isTerminal?: boolean;
   execute(argumentsValue: unknown, context: MainAgentToolContext): Promise<unknown> | unknown;
 }
 

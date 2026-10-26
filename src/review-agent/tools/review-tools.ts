@@ -146,7 +146,8 @@ function reviewTool(
   description: string,
   properties: Record<string, unknown>,
   required: string[],
-  execute: (input: Record<string, unknown>) => Promise<unknown> | unknown
+  execute: (input: Record<string, unknown>) => Promise<unknown> | unknown,
+  options: { isTerminal?: boolean } = {}
 ): MainAgentTool {
   return {
     definition: {
@@ -154,6 +155,7 @@ function reviewTool(
       description,
       parameters: toolParameters(properties, required),
     },
+    isTerminal: options.isTerminal,
     execute: (input) => execute(toolInput(input)),
   };
 }
@@ -247,7 +249,9 @@ export function createReviewTaskTools(options: CreateReviewTaskToolsOptions): Ma
             error: error instanceof Error ? error.message : 'Invalid submission',
           };
         }
-      }
+      },
+      // 提交是收尾动作，不占探索预算：否则模型可能刚好卡在调不出 submit 的临界点
+      { isTerminal: true }
     ),
   ];
 }

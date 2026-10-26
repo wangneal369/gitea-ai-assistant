@@ -90,6 +90,8 @@ export class MainAgentRunner {
     const maxSubagents = input.maxSubagents ?? Number.POSITIVE_INFINITY;
     const maxEmptyResponses = input.maxEmptyResponses ?? 3;
     const maxConsecutiveToolFailures = input.maxConsecutiveToolFailures ?? 5;
+    // 触顶时模型可能已写出结论但没机会提交，这里留住最后一条非空正文
+    let lastAssistantText: string | undefined;
 
     while (true) {
       const budgetStatus = this.getBudgetStatus(
@@ -102,7 +104,7 @@ export class MainAgentRunner {
         maxConsecutiveToolFailures
       );
       if (budgetStatus) {
-        return this.finish(sessionId, budgetStatus, turns, toolCalls, messages);
+        return this.finish(sessionId, budgetStatus, turns, toolCalls, messages, lastAssistantText);
       }
 
       const response = await this.modelClient.chat({
@@ -129,6 +131,12 @@ export class MainAgentRunner {
       }
 
       emptyResponseCount = 0;
+
+      // 记录模型这一轮写出的正文。工具调用触顶时没有走 completed 分支，
+      // 这段正文就是唯一能带走的结论，不能丢。
+      if (response.content?.trim()) {
+        lastAssistantText = response.content;
+      }
 
       const assistantMessage: LLMMessage = {
         role: 'assistant',
@@ -161,10 +169,26 @@ export class MainAgentRunner {
 
       for (const toolCall of response.toolCalls) {
         if (this.isTimedOut(input, startedAt)) {
-          return this.finish(sessionId, 'timeout_reached', turns, toolCalls, messages);
+          return this.finish(
+            sessionId,
+            'timeout_reached',
+            turns,
+            toolCalls,
+            messages,
+            lastAssistantText
+          );
         }
-        if (toolCalls >= input.maxToolCalls) {
-          return this.finish(sessionId, 'max_tool_calls_reached', turns, toolCalls, messages);
+        // 终态工具（submit 之类）不消耗探索预算：模型用完额度仍要能交结论
+        const isTerminalTool = this.toolsByName.get(toolCall.name)?.isTerminal === true;
+        if (!isTerminalTool && toolCalls >= input.maxToolCalls) {
+          return this.finish(
+            sessionId,
+            'max_tool_calls_reached',
+            turns,
+            toolCalls,
+            messages,
+            lastAssistantText
+          );
         }
 
         if (toolCall.name === 'spawn_subagent') {
@@ -202,7 +226,10 @@ export class MainAgentRunner {
         }
 
         const result = await this.executeTool(toolCall, sessionId, input.model, turns);
-        toolCalls += 1;
+        // 终态工具不计入探索配额
+        if (!isTerminalTool) {
+          toolCalls += 1;
+        }
         if (!result.ok) {
           consecutiveToolFailures += 1;
         } else {

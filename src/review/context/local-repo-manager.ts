@@ -13,9 +13,17 @@ function hashRepo(owner: string, repo: string): string {
   return createHash('sha256').update(`${owner}/${repo}`).digest('hex').slice(0, 16);
 }
 
-export class LocalRepoManager {
-  private mirrorLocks = new Map<string, Promise<void>>();
+/**
+ * mirror 锁表：模块级共享，不能做成实例字段。
+ *
+ * LocalRepoManager 在 controllers/review.ts、review/engine.ts、
+ * review/codex/codex-engine.ts、review/cleanup-scheduler.ts 四处各自 new，
+ * 锁若挂在实例上就是四把互不相干的锁 —— 清理任务拿不到正在 fetch 的那个锁，
+ * 照样能把 fetch 进行中的 mirror 删掉，留下残缺仓库。
+ */
+const mirrorLocks = new Map<string, Promise<void>>();
 
+export class LocalRepoManager {
   constructor(
     private readonly workDir: string,
     private readonly sandboxExec: SandboxExec,
@@ -38,10 +46,13 @@ export class LocalRepoManager {
   /**
    * 获取mirror仓库的互斥锁，防止并发修改同一mirror
    * 返回一个unlock函数，调用者必须在完成后调用
+   *
+   * 锁表是模块级的，所以不同 LocalRepoManager 实例之间也互斥 ——
+   * 清理任务（cleanup-scheduler）与审查引擎必须共用这一把锁。
    */
-  private async acquireMirrorLock(mirrorPath: string): Promise<() => void> {
+  async acquireMirrorLock(mirrorPath: string): Promise<() => void> {
     // 获取前一个锁（如果有），用于排队等待
-    const currentLock = this.mirrorLocks.get(mirrorPath) || Promise.resolve();
+    const currentLock = mirrorLocks.get(mirrorPath) || Promise.resolve();
 
     let releaseLock: () => void;
     const newLock = new Promise<void>((resolve) => {
@@ -50,7 +61,7 @@ export class LocalRepoManager {
 
     // 将新锁存入map（供后续调用者排队）
     // 修复：直接存储newLock而非chain，使unlock时的比较能够正确工作
-    this.mirrorLocks.set(mirrorPath, newLock);
+    mirrorLocks.set(mirrorPath, newLock);
 
     // 等待前一个锁完成
     await currentLock;
@@ -59,8 +70,8 @@ export class LocalRepoManager {
     return () => {
       releaseLock!();
       // 如果map中还是当前锁（没有新的等待者），清理以避免内存泄漏
-      if (this.mirrorLocks.get(mirrorPath) === newLock) {
-        this.mirrorLocks.delete(mirrorPath);
+      if (mirrorLocks.get(mirrorPath) === newLock) {
+        mirrorLocks.delete(mirrorPath);
       }
     };
   }
@@ -377,6 +388,9 @@ export class LocalRepoManager {
     for (const entry of entries) {
       if (!entry.endsWith('.git')) continue;
       const mirrorPath = path.join(mirrorsRoot, entry);
+      // 必须先拿锁再判断再删除：否则可能删在 fetch 途中，留下残缺仓库
+      // （表现就是 git 报 "did not send all necessary objects"）
+      const unlock = await this.acquireMirrorLock(mirrorPath);
       try {
         const info = await stat(mirrorPath);
         // 使用 mtime（最后修改时间，fetch 会更新）判断活跃度
@@ -394,6 +408,8 @@ export class LocalRepoManager {
           mirrorPath,
           error: error instanceof Error ? error.message : String(error),
         });
+      } finally {
+        unlock();
       }
     }
 
