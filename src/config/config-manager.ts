@@ -56,6 +56,10 @@ export interface AppConfig {
     commandTimeoutMs: number;
     maxToolCalls: number;
     maxTurns: number;
+    repositorySkills: boolean;
+    contextTokenBudget: number;
+    maxSubagents: number;
+    loopGuardThreshold: number;
     llmMaxConcurrentCalls: number;
     llmRetryMaxAttempts: number;
     llmRetryBaseDelayMs: number;
@@ -180,8 +184,12 @@ class ConfigManager {
         maxFileContentChars: toNumber('REVIEW_MAX_FILE_CONTENT_CHARS', 40000),
         allowedCommands: toStringArray('REVIEW_ALLOWED_COMMANDS', defaultAllowedCommands()),
         commandTimeoutMs: toNumber('REVIEW_COMMAND_TIMEOUT_MS', 120000),
-        maxToolCalls: toNumber('REVIEW_MAX_TOOL_CALLS', 8),
-        maxTurns: toNumber('REVIEW_MAX_TURNS', 12),
+        maxToolCalls: toNumber('REVIEW_MAX_TOOL_CALLS', 0),
+        maxTurns: toNumber('REVIEW_MAX_TURNS', 0),
+        repositorySkills: toBoolean('REVIEW_REPOSITORY_SKILLS', true),
+        contextTokenBudget: toNumber('REVIEW_CONTEXT_TOKEN_BUDGET', 0),
+        maxSubagents: toNumber('REVIEW_MAX_SUBAGENTS', 3),
+        loopGuardThreshold: toNumber('REVIEW_LOOP_GUARD_THRESHOLD', 3),
         llmMaxConcurrentCalls: toNumber('LLM_MAX_CONCURRENT_CALLS', 4),
         llmRetryMaxAttempts: toNumber('LLM_RETRY_MAX_ATTEMPTS', 3),
         llmRetryBaseDelayMs: toNumber('LLM_RETRY_BASE_DELAY_MS', 1000),

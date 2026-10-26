@@ -11,6 +11,11 @@ import config from '../config';
 import { DiffExtractor } from '../review/context/diff-extractor';
 import type { LocalRepoPaths } from '../review/context/local-repo-manager';
 import { LocalRepoManager } from '../review/context/local-repo-manager';
+import {
+  loadRepositorySkills,
+  renderSkillCatalog,
+  skillMetadataBudget,
+} from '../review/context/repository-skill-loader';
 import { tokenCounter } from '../review/context/token-counter';
 import { resolveProjectReviewPrompt } from '../review/project-review-prompt';
 import { FileReviewStore } from '../review/store/file-review-store';
@@ -18,6 +23,7 @@ import type { Finding, ReviewContext, ReviewRun } from '../review/types';
 import { logger } from '../utils/logger';
 import { applyDeterministicPublishAdapter } from './deterministic-publish-adapter';
 import { buildRepairPrompt, parseFindingResponse } from './schema';
+import { createReadSkillTool } from './tools/read-skill-tool';
 import {
   type ReviewToolState,
   type SubmittedReviewFindings,
@@ -113,7 +119,8 @@ const AGENT_OUTPUT_CONTRACT = [
 export function buildReviewPrompt(
   context: ReviewAgentRunContext,
   model?: string,
-  projectPrompt?: string
+  projectPrompt?: string,
+  repositorySkills?: string
 ): string {
   const changedFiles = context.diffSummary?.changedFiles ?? [];
   const fileSummary = changedFiles
@@ -134,10 +141,14 @@ export function buildReviewPrompt(
     header.push('', '## Project-specific requirements', '', projectPrompt);
   }
 
-  if (globalPrompt || projectPrompt) {
+  if (repositorySkills) {
+    header.push('', repositorySkills);
+  }
+
+  if (globalPrompt || projectPrompt || repositorySkills) {
     header.push(
       '',
-      'When requirements conflict: Project-specific requirements > Global requirements > Review guidelines.'
+      'When requirements conflict: Project-specific requirements > Repository review skills > Global requirements > Review guidelines.'
     );
   }
 
@@ -291,8 +302,7 @@ export class ReviewAgentEntrypoint {
 
       // 仓库级提示词只读一次，放在 agent 循环之外，避免在会话进行中反复触碰 DB
       const projectPrompt = resolveProjectReviewPrompt(run.owner, run.repo)?.trim();
-      const result = await this.runMainAgent(run, reviewContext, projectPrompt);
-      if (run.eventType === 'pull_request' && run.prNumber && run.baseSha) {
+      const result = await this.runMainAgent(run, reviewContext, projectPrompt);      if (run.eventType === 'pull_request' && run.prNumber && run.baseSha) {
         await this.localRepoManager.saveReviewedRef(
           repoPaths.mirrorPath,
           run.prNumber,
@@ -355,6 +365,19 @@ export class ReviewAgentEntrypoint {
     const sessionScope = buildSessionScope(run);
     const reviewToolState: ReviewToolState = { submittedReview: null };
     const reviewTools = createReviewTaskTools({ reviewContext, state: reviewToolState });
+
+    // 仓库自带技能：只把「目录」（名称+描述+路径）注入提示词，
+    // 正文由 read_skill 工具按需读取 —— 与 Codex 的渐进式披露一致，
+    // 避免长技能正文挤掉真正的审查材料（diff）。
+    const skillsEnabled = config.review.repositorySkills;
+    const skillContext = skillsEnabled
+      ? await loadRepositorySkills(reviewContext.workspacePath)
+      : { catalog: { skills: [], errors: [] }, catalogChars: 0, omitted: 0 };
+    const skillCatalogSection = renderSkillCatalog(
+      skillContext.catalog.skills,
+      skillMetadataBudget(tokenCounter.getContextWindow(this.model))
+    ).section;
+
     const subagentRunner = new SubagentRunner({
       modelClient: this.modelClient,
       transcriptRepository: this.transcriptRepository,
@@ -365,7 +388,13 @@ export class ReviewAgentEntrypoint {
       executor: subagentRunner,
       defaultSubagentModel: config.review.agentDefaultSubagentModel,
     });
-    const runner = this.runnerFactory([...reviewTools, spawnSubagentTool]);
+
+    const tools: MainAgentTool[] = [...reviewTools, spawnSubagentTool];
+    if (skillContext.catalog.skills.length > 0) {
+      tools.push(createReadSkillTool({ skills: skillContext.catalog.skills }));
+    }
+
+    const runner = this.runnerFactory(tools);
 
     const runContext: ReviewAgentRunContext = {
       reviewRunId: run.id,
@@ -397,13 +426,20 @@ export class ReviewAgentEntrypoint {
     const agentResult = await runner.run({
       agentType: 'review-main-agent',
       model: this.model,
-      userMessage: buildReviewPrompt(runContext, this.model, projectPrompt),
+      userMessage: buildReviewPrompt(runContext, this.model, projectPrompt, skillCatalogSection),
       maxTurns: config.review.maxTurns,
       maxToolCalls: config.review.maxToolCalls,
-      maxSubagents: 3,
+      maxSubagents: config.review.maxSubagents,
+      loopGuardThreshold: config.review.loopGuardThreshold,
       timeoutMs: config.review.commandTimeoutMs,
       maxEmptyResponses: 2,
       maxConsecutiveToolFailures: 3,
+      // 上下文预算：显式配置优先，否则按模型上下文窗口的 65% 推导，
+      // 与 Codex 的自动压缩阈值一致（DEFAULT_ASYNC_COMPACTION_THRESHOLD_PERCENT）。
+      contextTokenBudget:
+        config.review.contextTokenBudget > 0
+          ? config.review.contextTokenBudget
+          : Math.floor(tokenCounter.getUsableBudget(this.model) * 0.65),
       session: {
         agentType: 'review-main-agent',
         metadata: {

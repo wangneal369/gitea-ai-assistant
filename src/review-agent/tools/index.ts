@@ -9,3 +9,5 @@ export type {
   ReviewAgentFinding,
   SubmittedReviewFindings,
 } from './review-tools';
+export { createReadSkillTool } from './read-skill-tool';
+export type { CreateReadSkillToolOptions } from './read-skill-tool';

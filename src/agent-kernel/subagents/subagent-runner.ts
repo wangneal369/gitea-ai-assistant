@@ -100,6 +100,18 @@ export class SubagentRunner implements SpawnSubagentExecutor {
       allowListSpecified: true,
     });
 
+    // 硬拦截：子 agent 不得再委派子 agent。
+    //
+    // 纵深防御：即便调用方误把 spawn_subagent 传进子 agent 的工具集，
+    // 这里也会直接剔除。子 agent 各自是独立的模型调用，递归委派会让成本与
+    // 延迟呈指数增长，且子 agent 的结论无法被主 agent 有效复核。
+    const subagentToolNames = toolPermissions.allowedToolNames.filter(
+      (name) => name !== 'spawn_subagent'
+    );
+    const deniedByRecursionGuard = toolPermissions.allowedToolNames.filter(
+      (name) => name === 'spawn_subagent'
+    );
+
     const invocation = this.transcriptRepository.createInvocation({
       parentSessionId: input.parent.sessionId,
       agentType: input.agentType,
@@ -111,9 +123,12 @@ export class SubagentRunner implements SpawnSubagentExecutor {
         cwd: input.cwd,
         parentToolCallId: input.parent.toolCall.id,
         toolPermissions: {
-          allowedToolNames: toolPermissions.allowedToolNames,
+          allowedToolNames: subagentToolNames,
           disallowedToolNames: toolPermissions.disallowedToolNames,
-          deniedToolNames: toolPermissions.deniedToolNames,
+          deniedToolNames: [
+            ...toolPermissions.deniedToolNames,
+            ...deniedByRecursionGuard,
+          ],
           unknownAllowedToolNames: toolPermissions.unknownAllowedToolNames,
           unknownDisallowedToolNames: toolPermissions.unknownDisallowedToolNames,
         },
@@ -156,9 +171,12 @@ export class SubagentRunner implements SpawnSubagentExecutor {
         description: input.description,
         parentToolCallId: input.parent.toolCall.id,
         toolPermissions: {
-          allowedToolNames: toolPermissions.allowedToolNames,
+          allowedToolNames: subagentToolNames,
           disallowedToolNames: toolPermissions.disallowedToolNames,
-          deniedToolNames: toolPermissions.deniedToolNames,
+          deniedToolNames: [
+            ...toolPermissions.deniedToolNames,
+            ...deniedByRecursionGuard,
+          ],
           unknownAllowedToolNames: toolPermissions.unknownAllowedToolNames,
           unknownDisallowedToolNames: toolPermissions.unknownDisallowedToolNames,
         },
@@ -168,7 +186,10 @@ export class SubagentRunner implements SpawnSubagentExecutor {
     const runner = new MainAgentRunner({
       modelClient: this.modelClient,
       transcriptRepository: this.transcriptRepository,
-      tools: toolPermissions.tools,
+      // 最后一层防护：实际注册给子 agent 的工具集里剔除 spawn_subagent。
+      // 子 agent 不得再委派子 agent —— 递归会让成本与延迟指数增长，
+      // 且孙级结论无法被主 agent 有效复核。
+      tools: toolPermissions.tools.filter((tool) => tool.definition.name !== 'spawn_subagent'),
       now: this.now,
     });
 

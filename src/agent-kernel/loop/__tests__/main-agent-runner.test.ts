@@ -156,6 +156,12 @@ describe('MainAgentRunner', () => {
           finishReason: 'tool_calls',
           toolCalls: [{ id: 'call-2', name: 'lookup', arguments: '{"query":"two"}' }],
         }),
+        // 轮次预算耗尽后进入收尾阶段：模型不再有探索工具，
+        // 只能输出正文。收尾轮数上限触发后以 finalized 结束。
+        response({ content: '收尾结论' }),
+        response({ content: '收尾结论' }),
+        response({ content: '收尾结论' }),
+        response({ content: '收尾结论' }),
       ]),
       transcriptRepository: agentSessionRepository,
       tools: [lookupTool],
@@ -167,17 +173,23 @@ describe('MainAgentRunner', () => {
       maxTurns: 2,
       maxToolCalls: 10,
       timeoutMs: 60_000,
+      maxFinalizationTurns: 2,
     });
 
-    expect(result.status).toBe('max_turns_reached');
-    expect(result.turns).toBe(2);
+    // 新契约：轮次预算耗尽不再硬切断，而是转入收尾阶段跑完。
+    // 收尾阶段模型正常输出正文且不再调工具 → 走正常完成分支 → completed
+    expect(result.status).toBe('completed');
+    expect(result.turns).toBeGreaterThan(2);
     expect(result.toolCalls).toBe(2);
-    expect(agentSessionRepository.getSessionTree(result.sessionId)?.status).toBe('failed');
+    expect(result.finalText).toBe('收尾结论');
   });
 
   test('stops before exceeding max tool calls', async () => {
     const runner = new MainAgentRunner({
       modelClient: new FakeModelClient([
+        // 同一轮里发出两个工具调用：第一个执行，第二个必须因额度用尽被拒。
+        // 这是回归用例 —— 早先的实现只在轮次开始时检查额度，
+        // 导致同一轮的剩余调用全部白跑。
         response({
           finishReason: 'tool_calls',
           toolCalls: [
@@ -185,6 +197,11 @@ describe('MainAgentRunner', () => {
             { id: 'call-2', name: 'lookup', arguments: '{"query":"two"}' },
           ],
         }),
+        // 收尾阶段：模型输出正文，不再有探索工具
+        response({ content: '收尾结论' }),
+        response({ content: '收尾结论' }),
+        response({ content: '收尾结论' }),
+        response({ content: '收尾结论' }),
       ]),
       transcriptRepository: agentSessionRepository,
       tools: [lookupTool],
@@ -196,11 +213,17 @@ describe('MainAgentRunner', () => {
       maxTurns: 4,
       maxToolCalls: 1,
       timeoutMs: 60_000,
+      maxFinalizationTurns: 2,
     });
 
-    expect(result.status).toBe('max_tool_calls_reached');
+    // 新契约：工具额度用尽转收尾，而不是硬切断
+    expect(result.status).toBe('completed');
+    // 只有第一个调用真正执行了，第二个被拒绝
     expect(result.toolCalls).toBe(1);
-    expect(agentSessionRepository.getSessionTree(result.sessionId)?.toolCalls).toHaveLength(1);
+    const tree = agentSessionRepository.getSessionTree(result.sessionId);
+    // 被拒绝的调用也会留痕（状态为 failed），便于排查
+    expect(tree?.toolCalls.length).toBeGreaterThanOrEqual(1);
+    expect(tree?.toolCalls.filter((call) => call.status === 'failed').length).toBeGreaterThanOrEqual(1);
   });
 
   test('records tool execution errors as structured tool results and continues', async () => {

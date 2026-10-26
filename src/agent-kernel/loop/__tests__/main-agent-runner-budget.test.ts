@@ -114,6 +114,10 @@ describe('MainAgentRunner 预算耗尽时的结论保全', () => {
         finishReason: 'tool_calls',
         toolCalls: [{ id: 'c2', name: 'explore', arguments: '{}' }],
       }),
+      // 额度用尽后进入收尾阶段，模型输出正文
+      response({ content: '收尾阶段的结论' }),
+      response({ content: '收尾阶段的结论' }),
+      response({ content: '收尾阶段的结论' }),
     ]);
     const repository = createMemoryRepository();
     const runner = new MainAgentRunner({
@@ -128,11 +132,14 @@ describe('MainAgentRunner 预算耗尽时的结论保全', () => {
       maxTurns: 10,
       maxToolCalls: 1,
       timeoutMs: 60_000,
+      maxFinalizationTurns: 2,
     });
 
-    expect(result.status).toBe('max_tool_calls_reached');
+    // 新契约：触顶不再硬切断，而是转入收尾阶段跑完。
+    // 收尾阶段模型正常输出正文且不再调工具 → 走正常完成分支 → completed
+    expect(result.status).toBe('completed');
     // 关键断言：正文没被丢掉
-    expect(result.finalText).toBe('我已确认改动集中在鉴权分支，结论如下……');
+    expect(result.finalText).toBe('收尾阶段的结论');
     expect(result.toolCalls).toBe(1);
   });
 

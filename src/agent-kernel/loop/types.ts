@@ -19,7 +19,14 @@ export type MainAgentTerminalStatus =
   | 'max_subagents_reached'
   | 'timeout_reached'
   | 'max_empty_responses'
-  | 'max_consecutive_tool_failures';
+  | 'max_consecutive_tool_failures'
+  /**
+   * 收尾阶段结束：预算触顶后 Agent 已完成强制收尾并给出了结论。
+   *
+   * 这与 `max_tool_calls_reached` 的区别是：后者是「被硬切断，结论可能不完整」，
+   * 本状态是「预算用尽后走完了收尾流程，有可交付的结论」。
+   */
+  | 'finalized';
 
 export interface MainAgentModelClient {
   chat(request: LLMChatRequest): Promise<LLMChatResponse>;
@@ -99,12 +106,59 @@ export interface MainAgentRunInput {
   maxTokens?: number;
   responseFormat?: 'text' | 'json';
   providerOptions?: Record<string, unknown>;
-  maxTurns: number;
-  maxToolCalls: number;
+  /**
+   * Maximum number of model turns. `0` or undefined means unlimited.
+   *
+   * The review agent is deliberately not capped here: a review that needs to
+   * read twelve files must be allowed to read twelve files. Codex likewise
+   * imposes no `maxTurns` ceiling. Runaway behaviour is prevented by the loop
+   * detector and the timeout instead.
+   */
+  maxTurns?: number;
+  /**
+   * Maximum number of exploration tool calls. `0` or undefined means unlimited.
+   *
+   * Terminal tools (such as `submit_review_findings`) never count against
+   * this budget.
+   */
+  maxToolCalls?: number;
   maxSubagents?: number;
   timeoutMs: number;
   maxEmptyResponses?: number;
   maxConsecutiveToolFailures?: number;
+  /**
+   * How many consecutive identical tool calls are tolerated before the loop
+   * guard intervenes. Defaults to 3.
+   */
+  loopGuardThreshold?: number;
+  /**
+   * Token budget for the running context.
+   *
+   * When the accumulated context exceeds this, the runner trims older tool
+   * results instead of letting the request grow without bound. Codex applies
+   * the same idea via automatic compaction, but with a summary step; for a
+   * review agent, dropping stale tool payloads keeps the diff intact and is
+   * both cheaper and more faithful to the original evidence.
+   */
+  contextTokenBudget?: number;
+  /**
+   * Fraction of the context budget at which trimming kicks in.
+   * Codex compacts at 65% of the window; we use the same default.
+   */
+  contextTrimThreshold?: number;
+  /**
+   * Number of recent tool messages that are never trimmed.
+   */
+  contextKeepRecentToolMessages?: number;
+  /**
+   * How many extra model turns the runner grants during the finalization phase.
+   *
+   * When the exploration budget is exhausted the runner does not stop — it
+   * switches to a finalization phase where only terminal tools (such as
+   * `submit_review_findings`) are allowed, so the agent always gets to deliver
+   * a conclusion instead of having its work cut in half.
+   */
+  maxFinalizationTurns?: number;
 }
 
 export interface MainAgentRunResult {
